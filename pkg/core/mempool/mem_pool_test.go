@@ -5,6 +5,7 @@ import (
 	"math/big"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -996,4 +997,42 @@ func TestMempoolIterateVerifiedTransactions(t *testing.T) {
 		FallbackTransaction: mkTwoSignersTx(smallNetFee, &nonce),
 	}
 	checkPooledRequest(t, r5, false)
+}
+
+// Verify is a check: it must not cache the payer's fee, which used to be a map
+// write under Pool.lock's read lock (#4485).
+func TestVerifyDoesNotCachePayerFee(t *testing.T) {
+	mp := New(10, false, nil)
+	fs := &FeerStub{balance: 2}
+	payer := util.Uint160{1, 2, 3}
+	tx := transaction.New([]byte{byte(opcode.PUSH1)}, 0)
+	tx.NetworkFee = 1
+	tx.Signers = []transaction.Signer{{Account: payer}}
+
+	require.True(t, mp.Verify(tx, fs))
+	require.Empty(t, mp.fees, "Verify must not write the fee cache")
+	require.NoError(t, mp.Add(tx, fs))
+	require.Len(t, mp.fees, 1)
+}
+
+// Concurrent Verify calls for an uncached payer must not touch mp.fees; run
+// with -race to catch a regression of the former concurrent map write.
+func TestVerifyIsSafeForConcurrentCallers(t *testing.T) {
+	mp := New(10, false, nil)
+	fs := &FeerStub{balance: 100}
+	payer := util.Uint160{1, 2, 3}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		tx := transaction.New([]byte{byte(opcode.PUSH1)}, 0)
+		tx.NetworkFee = 1
+		tx.Signers = []transaction.Signer{{Account: payer}}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = mp.Verify(tx, fs)
+		}()
+	}
+	wg.Wait()
+	require.Empty(t, mp.fees)
 }
