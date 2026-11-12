@@ -9,6 +9,7 @@ import (
 	"github.com/nspcc-dev/neo-go/pkg/smartcontract"
 	"github.com/nspcc-dev/neo-go/pkg/smartcontract/callflag"
 	"github.com/nspcc-dev/neo-go/pkg/smartcontract/manifest"
+	"github.com/nspcc-dev/neo-go/pkg/util"
 	"github.com/nspcc-dev/neo-go/pkg/vm/stackitem"
 )
 
@@ -37,14 +38,20 @@ func newTreasury() *Treasury {
 		manifest.NewParameter("amount", smartcontract.IntegerType),
 		manifest.NewParameter("tokenId", smartcontract.ByteArrayType),
 		manifest.NewParameter("data", smartcontract.AnyType))
-	md = NewMethodAndPrice(t.onNEP11Payment, 1<<5, callflag.NoneFlag)
+	md = NewMethodAndPrice(t.onNEP11PaymentV0, 1<<5, callflag.NoneFlag, config.HFDefault, config.HFHuyao)
+	t.AddMethod(md, desc)
+
+	md = NewMethodAndPrice(t.onNEP11PaymentV1, 1<<5, callflag.NoneFlag, config.HFHuyao)
 	t.AddMethod(md, desc)
 
 	desc = NewDescriptor("onNEP17Payment", smartcontract.VoidType,
 		manifest.NewParameter("from", smartcontract.Hash160Type),
 		manifest.NewParameter("amount", smartcontract.IntegerType),
 		manifest.NewParameter("data", smartcontract.AnyType))
-	md = NewMethodAndPrice(t.onNEP17Payment, 1<<5, callflag.NoneFlag)
+	md = NewMethodAndPrice(t.onNEP17PaymentV0, 1<<5, callflag.NoneFlag, config.HFDefault, config.HFHuyao)
+	t.AddMethod(md, desc)
+
+	md = NewMethodAndPrice(t.onNEP17PaymentV1, 1<<5, callflag.NoneFlag, config.HFHuyao)
 	t.AddMethod(md, desc)
 
 	return t
@@ -84,9 +91,19 @@ func (t *Treasury) verify(ic *interop.Context, _ []stackitem.Item) stackitem.Ite
 	return stackitem.NewBool(t.NEO.CheckCommittee(ic))
 }
 
-func (t *Treasury) onNEP11Payment(ic *interop.Context, args []stackitem.Item) stackitem.Item {
+// onNEP11PaymentV0 is a pre-Huyao implementation of onNEP11Payment that rejects null sender.
+func (t *Treasury) onNEP11PaymentV0(ic *interop.Context, args []stackitem.Item) stackitem.Item {
+	return t.onNEP11PaymentGeneric(args, false)
+}
+
+// onNEP11PaymentV1 is an implementation of onNEP11Payment that accepts null sender of minted tokens.
+func (t *Treasury) onNEP11PaymentV1(ic *interop.Context, args []stackitem.Item) stackitem.Item {
+	return t.onNEP11PaymentGeneric(args, true)
+}
+
+func (t *Treasury) onNEP11PaymentGeneric(args []stackitem.Item, allowNullFrom bool) stackitem.Item {
 	// Arguments must be accessed and parsed to match the reference behaviour, but no real action is performed.
-	from := toUint160(args[0])
+	from := parsePaymentSender(args[0], allowNullFrom)
 	amount := toBigInt(args[1])
 	tokenId := toBytes(args[2])
 	data := args[3]
@@ -95,12 +112,31 @@ func (t *Treasury) onNEP11Payment(ic *interop.Context, args []stackitem.Item) st
 	return stackitem.Null{}
 }
 
-func (t *Treasury) onNEP17Payment(ic *interop.Context, args []stackitem.Item) stackitem.Item {
+// onNEP17PaymentV0 is a pre-Huyao implementation of onNEP17Payment that rejects null sender.
+func (t *Treasury) onNEP17PaymentV0(ic *interop.Context, args []stackitem.Item) stackitem.Item {
+	return t.onNEP17PaymentGeneric(args, false)
+}
+
+// onNEP17PaymentV1 is an implementation of onNEP17Payment that accepts null sender of minted tokens.
+func (t *Treasury) onNEP17PaymentV1(ic *interop.Context, args []stackitem.Item) stackitem.Item {
+	return t.onNEP17PaymentGeneric(args, true)
+}
+
+func (t *Treasury) onNEP17PaymentGeneric(args []stackitem.Item, allowNullFrom bool) stackitem.Item {
 	// Arguments must be accessed and parsed to match the reference behaviour, but no real action is performed.
-	from := toUint160(args[0])
+	from := parsePaymentSender(args[0], allowNullFrom)
 	amount := toBigInt(args[1])
 	data := args[2]
 
 	var _, _, _ = from, amount, data
 	return stackitem.Null{}
+}
+
+// parsePaymentSender parses payment sender as Hash160. If allowed, null sender
+// is accepted and returned as zero Hash160.
+func parsePaymentSender(from stackitem.Item, allowNull bool) util.Uint160 {
+	if _, ok := from.(stackitem.Null); ok && allowNull {
+		return util.Uint160{}
+	}
+	return toUint160(from)
 }
