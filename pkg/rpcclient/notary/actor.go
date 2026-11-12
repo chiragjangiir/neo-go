@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/nspcc-dev/neo-go/pkg/core/native/nativehashes"
 	"github.com/nspcc-dev/neo-go/pkg/core/state"
@@ -74,6 +75,7 @@ type ActorOptions struct {
 	// MainAttributes are additional attributes to be added into main
 	// transaction by an appropriate actor. Irrespective of this setting
 	// (which defaults to nil) NotaryAssisted attribute is always added.
+	// Conflicts attribute is not allowed here.
 	MainAttributes []transaction.Attribute
 	// MainCheckerModifier will be used by the main Actor when creating
 	// transactions. It defaults to using [actor.DefaultCheckerModifier]
@@ -193,6 +195,11 @@ func newTunedActor(c RPCActor, signers []actor.SignerAccount, simpleAcc *wallet.
 		defOpts := NewDefaultActorOptions(reader, simpleAcc)
 		opts = defOpts
 	}
+	if slices.ContainsFunc(opts.MainAttributes, func(a transaction.Attribute) bool {
+		return a.Type == transaction.ConflictsT
+	}) {
+		return nil, errMainConflicts
+	}
 	var notarySA = actor.SignerAccount{
 		Signer: transaction.Signer{
 			Account: Hash,
@@ -242,6 +249,8 @@ func newTunedActor(c RPCActor, signers []actor.SignerAccount, simpleAcc *wallet.
 	}
 	return &Actor{*mainActor, *fbActor, opts.FbScript, reader, simpleAcc, c}, nil
 }
+
+var errMainConflicts = errors.New("main transaction can't have Conflicts attribute")
 
 // Notarize is a simple wrapper for transaction-creating functions that allows to
 // send any partially-signed transaction in a notary request with a fallback
@@ -308,14 +317,17 @@ func (a *Actor) SendRequest(mainTx *transaction.Transaction, fbTx *transaction.T
 // it to the network. Caller takes full responsibility for transaction
 // correctness in this case, use this method only if you know exactly that you
 // need to override some of the other method's behavior and you can do it. The
-// values returned are main and fallback transaction hashes, ValidUntilBlock
-// and error if any.
+// main transaction can't have Conflicts attribute. The values returned are
+// main and fallback transaction hashes, ValidUntilBlock and error if any.
 func (a *Actor) SendRequestExactly(mainTx *transaction.Transaction, fbTx *transaction.Transaction) (util.Uint256, util.Uint256, uint32, error) {
 	var (
 		fbHash   = fbTx.Hash()
 		mainHash = mainTx.Hash()
 		vub      = mainTx.ValidUntilBlock
 	)
+	if mainTx.HasAttribute(transaction.ConflictsT) {
+		return mainHash, fbHash, vub, errMainConflicts
+	}
 	req := &payload.P2PNotaryRequest{
 		MainTransaction:     mainTx,
 		FallbackTransaction: fbTx,

@@ -221,6 +221,21 @@ func TestNewActor(t *testing.T) {
 	}}, opts)
 	require.Error(t, err)
 
+	// Conflicts in main transaction attributes.
+	opts = NewDefaultActorOptions(NewReader(invoker.New(rc, nil)), accs[0])
+	opts.MainAttributes = []transaction.Attribute{{
+		Type:  transaction.ConflictsT,
+		Value: &transaction.Conflicts{Hash: util.Uint256{1, 2, 3}},
+	}}
+	_, err = NewTunedActor(rc, []actor.SignerAccount{{
+		Signer: transaction.Signer{
+			Account: multiAccs[0].Contract.ScriptHash(),
+			Scopes:  transaction.CalledByEntry,
+		},
+		Account: multiAccs[0],
+	}}, opts)
+	require.ErrorIs(t, err, errMainConflicts)
+
 	// Good, one multisig.
 	multi0, err := NewActor(rc, []actor.SignerAccount{{
 		Signer: transaction.Signer{
@@ -340,6 +355,15 @@ func TestSendRequestExactly(t *testing.T) {
 	require.Equal(t, mainTx.Hash(), mHash)
 	require.Equal(t, fbTx.Hash(), fbHash)
 	require.Equal(t, mainTx.ValidUntilBlock, vub)
+
+	// Conflicts in main transaction.
+	rc.mirror = true
+	mainTx.Attributes = []transaction.Attribute{{
+		Type:  transaction.ConflictsT,
+		Value: &transaction.Conflicts{Hash: util.Uint256{1, 2, 3}},
+	}}
+	_, _, _, err = act.SendRequestExactly(mainTx, fbTx)
+	require.ErrorIs(t, err, errMainConflicts)
 }
 
 func TestSendRequest(t *testing.T) {
@@ -435,6 +459,18 @@ func TestSendRequest(t *testing.T) {
 	require.NoError(t, err)
 	_, _, _, err = act.SendRequest(mainTx, fbTx)
 	require.Error(t, err)
+
+	// Conflicts in main transaction.
+	rc.mirror = true
+	conflictsTx, err := act.MakeUnsignedRun(script, []transaction.Attribute{{
+		Type:  transaction.ConflictsT,
+		Value: &transaction.Conflicts{Hash: util.Uint256{1, 2, 3}},
+	}})
+	require.NoError(t, err)
+	fbTx, err = act.FbActor.MakeUnsignedRun(script, nil)
+	require.NoError(t, err)
+	_, _, _, err = act.SendRequest(conflictsTx, fbTx)
+	require.ErrorIs(t, err, errMainConflicts)
 }
 
 func TestNotarize(t *testing.T) {
@@ -505,6 +541,13 @@ func TestNotarize(t *testing.T) {
 	require.NotEqual(t, util.Uint256{}, mHash)
 	require.NotEqual(t, util.Uint256{}, fbHash)
 	require.Equal(t, uint32(92), vub)
+
+	// Conflicts in main transaction.
+	_, _, _, err = act.Notarize(act.MakeUnsignedRun(script, []transaction.Attribute{{
+		Type:  transaction.ConflictsT,
+		Value: &transaction.Conflicts{Hash: util.Uint256{1, 2, 3}},
+	}}))
+	require.ErrorIs(t, err, errMainConflicts)
 }
 
 func TestDefaultActorOptions(t *testing.T) {
